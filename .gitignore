@@ -1,0 +1,20 @@
+# Misc
+# ----
+cases.txt
+
+# Git
+# ---
+.git/
+
+# Java
+# ----
+*.class
+*.jar
+*.war
+*.ear
+
+# IntelliJ
+# --------
+*.iml
+out/
+.idea/
