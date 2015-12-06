@@ -1,14 +1,14 @@
 package net.nolasaint.bftp.impl;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.PrintWriter;
+import net.nolasaint.bftp.BFTP;
+
+import java.io.*;
 
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
 
+import java.nio.ByteBuffer;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -131,11 +131,8 @@ public class BFTPServer {
         ssocket.close();
         listen = false;
 
-        // TODO handle close() in here? would add delay yes?
         // Gracefully close client handlers
-        for (ClientHandler handler : clientHandlers) {
-            handler.stop();
-        }
+        clientHandlers.forEach(ClientHandler::stop);
     }
 
     /* PROTECTED MEMBERS */
@@ -147,11 +144,13 @@ public class BFTPServer {
      */
     protected class ClientHandler implements Runnable {
 
+        private static final String UNSUPPORTED_COMMAND_RESPONSE = "Unsupported command";
+
         private final String clientID;
 
-        private boolean shouldClose;
-        private InputStream input;
-        private OutputStream output;
+        private boolean isFin, shouldClose;
+        private DataInputStream input;
+        private DataOutputStream output;
         private Socket csocket;
 
         /**
@@ -176,9 +175,9 @@ public class BFTPServer {
          * A graceful close will only terminate the connection when the handler is not currently
          * processing a command from the client.
          */
-        public synchronized void stop() {
+        public void stop() {
             shouldClose = true;
-            // TODO Mid-Put case? Timeout after a while
+
             log("Will close after handling current command");
         }
 
@@ -186,38 +185,120 @@ public class BFTPServer {
         public void run() {
             log("Handling client connection");
 
+            // Try to create I/O streams
+            shouldClose = !initializeIOStreams();
+            isFin = false;
+
+            while (!shouldClose) {
+                byte content[], opcode;
+                int csize;
+
+                try {
+                    // [0,4] ~ csize, [5,6] ~ opcode
+                    csize = input.readInt();
+                    opcode = input.readByte();
+
+                    content = new byte[csize];
+                    for (int i = 0; i < csize; i++) {
+                        content[i] = input.readByte();
+                    }
+
+                    // Determine if FIN bit is set
+                    isFin = ((opcode & BFTP.FIN) != 0);
+
+                    switch (opcode) {
+                        case BFTP.GET:
+                            // TODO: implement
+                            break;
+
+                        case BFTP.PUT:
+                            // TODO: implement
+                            break;
+
+                        case BFTP.FIN:
+                            shouldClose = true;
+                            break;
+
+                        default:
+                            handleUnsupported();
+
+                            // Do not trust this client
+                            shouldClose = true;
+                            break;
+                    }
+                }
+                catch (IOException ioe) {
+                    // TODO: Handle differing types of exceptions
+                    log("Encountered IOException while reading from client socket");
+
+                    // ioe.printStackTrace(BFTPServer.this.logstream);
+                    shouldClose = true;
+                }
+
+                if (isFin) {
+                    log("FIN bit was set, closing connection");
+                }
+
+                // Close if we see the socket has closed
+                shouldClose |= (isFin || csocket.isClosed());
+            }
+
+            log("Closing connection with client");
+
+            // TODO: send(FIN)
+
+            clientHandlers.remove(this);
+        }
+
+        /**
+         * Helper method to handle an unsupported message type.
+         *
+         * @throws  IOException if one is encountered while handling the command.
+         */
+        private void handleUnsupported() throws IOException {
+            log("Received unsupported command / message from client");
+
+            byte content[] = UNSUPPORTED_COMMAND_RESPONSE.getBytes(), response[];
+            int length = BFTP.HEADER_LENGTH + content.length;
+            ByteBuffer buffer = ByteBuffer.allocate(length);
+
+            // Build response
+            buffer.putInt(content.length);
+            buffer.put(BFTP.ERR);
+            buffer.put(content);
+
+            output.write(buffer.array());
+        }
+
+        /**
+         * Helper method to create the input and output streams
+         *
+         * @return  TRUE if the I/O streams were created, else FALSE.
+         */
+        private boolean initializeIOStreams() {
+            boolean successful;
+
             try {
-                input = csocket.getInputStream();
-                output = csocket.getOutputStream();
+                input = new DataInputStream(csocket.getInputStream());
+                output = new DataOutputStream(csocket.getOutputStream());
+
+                successful = true;
             }
             catch (IOException ioe) {
-                shouldClose = true;
+                successful = false;
 
                 log ("Failed to get input/output streams");
             }
 
-            while (!shouldClose) {
-                // TODO internal state machine
-
-                // TODO simulate command handling
-                try { Thread.sleep(10000); }
-                catch (InterruptedException iex) {}
-
-                // Close if we see the socket has closed
-                shouldClose |= csocket.isClosed();
-            }
-
-            log("Closing connection with client");
-            // TODO send(FIN)
+            return successful;
         }
 
-        /*
+        /**
          * Helper method to log client handler output.
          */
         private void log(String entry) {
             BFTPServer.this.log(clientID + entry);
         }
-
     }
 
     /* PRIVATE MEMBERS */

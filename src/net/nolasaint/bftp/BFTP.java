@@ -16,8 +16,9 @@ public class BFTP {
     public static final String VERSION = "1.0";
 
     /* FIELD SIZES */
-    public static final int PSIZE_LENGTH  = 1; // in bytes ... length of packet size field
+    public static final int CSIZE_LENGTH  = 4; // in bytes ... length of content size field
     public static final int OPCODE_LENGTH = 1; // in bytes ... length of opcode field
+    public static final int HEADER_LENGTH = CSIZE_LENGTH + OPCODE_LENGTH;
 
     /* OPCODES */
     //                                 0b000ERFPG ... Philosophy

@@ -1,32 +1,62 @@
 package net.nolasaint.bftp.test;
 
+import net.nolasaint.bftp.BFTP;
 import net.nolasaint.bftp.impl.BFTPServer;
 
 import java.io.IOException;
+import java.net.BindException;
 import java.net.Socket;
+import java.nio.ByteBuffer;
 
 /**
- * Created by Evan on 12/2/2015.
+ * Test cases for BFTPServer.
+ *
+ * Created: 2015-12-05
+ * @author  Evan
  */
 public class BFTPServerTests {
 
-    public static void main(String args[]) {
+    public static void testUnsupportedCommand() {
+        int port = 0xFADE;
+
         try {
-            BFTPServer server = new BFTPServer(8008, System.out);
-            Runnable task = () -> { try { server.run(); } catch (IOException ioex) { } };
-            Thread runthread = new Thread(task);
+            BFTPServer server   = new BFTPServer(port, System.out);
+            Runnable runtask    = () -> { try { server.run(); } catch (IOException ioe) { } };
+            Socket clientSocket = new Socket("localhost", port);
+            Thread runthread    = new Thread(runtask);
 
             runthread.start();
+         // ------------------
 
-            Socket clientSocket = new Socket("localhost", 8008);
+            ByteBuffer buffer = ByteBuffer.allocate(BFTP.HEADER_LENGTH);
 
-            Thread.sleep(1000);
+            buffer.putInt(0); // no content
+            buffer.put((byte) 0);
 
+            clientSocket.getOutputStream().write(buffer.array());
+            clientSocket.getOutputStream().flush();
+
+            // TODO: Listen to response
+
+            // Wait a reasonable amount of time
+            Thread.sleep(2000);
             server.shutdown();
+            clientSocket.close();
         }
-        catch (InterruptedException iex) {
+        catch (InterruptedException ie) {
+            System.err.println("ERROR: Interrupted while sleeping, make sure port " + port
+                    + "is closed");
         }
-        catch (IOException ioex) {
+        catch (BindException be) {
+            System.err.println("ERROR: Could not create BFTPServer, port " + port
+                    + " already bound");
         }
+        catch (IOException ioe) {
+            System.err.println("ERROR: Could not create BFTPServer");
+        }
+    }
+
+    public static void main(String args[]) {
+        testUnsupportedCommand();
     }
 }
