@@ -9,11 +9,13 @@ import java.net.Socket;
 import java.net.SocketException;
 
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.HashSet;
 import java.util.Set;
 
 /**
- * @TODO Documentation
+ * TODO Documentation
  *
  * NOTE: Runs on top of TCP.
  *
@@ -23,8 +25,8 @@ import java.util.Set;
  */
 public class BFTPServer {
 
-    /* LOGGING_MAXWIDTH indicates the maximum length of a log entry line without the prefix */
-    private static final int LOGGING_MAXWIDTH = 80;
+    /* LOGGING_MAX_WIDTH indicates the maximum length of a log entry line without the prefix */
+    private static final int LOGGING_MAX_WIDTH = 80;
 
     /* LOGGING_PREFIX occurs before all logging entries */
     private static final String LOGGING_PREFIX = "[Server] ";
@@ -35,9 +37,7 @@ public class BFTPServer {
     private final PrintWriter logstream;
 
     private boolean listen;
-    private int port;
     private Set<ClientHandler> clientHandlers; // Todo - Every once in a while poll this and see if client closed
-    private Object logLock = new Object();
     private ServerSocket ssocket;
 
     /**
@@ -59,10 +59,7 @@ public class BFTPServer {
             this.logstream = new PrintWriter(logstream);
         }
 
-        // TODO Potentially log initial message (GREETING) ?
-
         ssocket = new ServerSocket(port);
-        this.port = port;
         listen = false;
 
         // Avoid instantiating this if ServerSocket creation causes IOException
@@ -117,7 +114,6 @@ public class BFTPServer {
             }
         }
 
-        // TODO Either here or in close(), call close() on clienthandlers
         log("No longer handling incoming connections");
     }
 
@@ -144,7 +140,17 @@ public class BFTPServer {
      */
     protected class ClientHandler implements Runnable {
 
-        private static final String UNSUPPORTED_COMMAND_RESPONSE = "Unsupported command";
+        private static final String
+                FILE_NOT_FOUND_RESPONSE      = "File not found";
+
+        private static final String
+                FILE_READ_ERROR_RESPONSE     = "Encountered error while reading file";
+
+        private static final String
+                FILE_TOO_LARGE_RESPONSE     = "Requested file is too large (> ~2GiB)";
+
+        private static final String
+                UNSUPPORTED_COMMAND_RESPONSE = "Unsupported command";
 
         private final String clientID;
 
@@ -208,7 +214,7 @@ public class BFTPServer {
 
                     switch (opcode) {
                         case BFTP.GET:
-                            // TODO: implement
+                            handleGet(content);
                             break;
 
                         case BFTP.PUT:
@@ -226,12 +232,13 @@ public class BFTPServer {
                             shouldClose = true;
                             break;
                     }
+
+                    log("Sent response to client");
                 }
                 catch (IOException ioe) {
                     // TODO: Handle differing types of exceptions
                     log("Encountered IOException while reading from client socket");
 
-                    // ioe.printStackTrace(BFTPServer.this.logstream);
                     shouldClose = true;
                 }
 
@@ -251,21 +258,73 @@ public class BFTPServer {
         }
 
         /**
+         * Helper method to handle a GET request.
+         *
+         * @param   content - bytes of the content field
+         *
+         * @throws  IOException if one is encountered while writing to the socket.
+         */
+        private void handleGet(byte content[]) throws IOException {
+            log("Received GET request from client");
+
+            byte responseOpcode, responseContent[];
+            ByteBuffer buffer;
+            String path = new String(content); // TODO: specify UTF-8?
+
+            // Check if file exists
+            if (Files.exists(Paths.get(path))) { // TODO: catch IllegalPathException
+                // Don't throw IOException from file reads
+                try {
+                    responseOpcode = BFTP.GET | BFTP.RSP;
+                    responseContent = Files.readAllBytes(Paths.get(path));
+
+                    log("Sending requested file to client");
+                }
+                catch (OutOfMemoryError ome) {
+                    responseOpcode = BFTP.GET | BFTP.RSP;
+                    responseContent = FILE_TOO_LARGE_RESPONSE.getBytes(); // TODO: specify UTF-8?
+
+                    log("Requested file is too large");
+                }
+                catch (IOException ie) {
+                    responseOpcode = BFTP.GET | BFTP.ERR;
+                    responseContent = FILE_READ_ERROR_RESPONSE.getBytes(); // TODO: specify UTF-8?
+
+                    log("Encounter IOException while reading from file");
+                }
+            }
+            else {
+                responseOpcode = BFTP.GET | BFTP.ERR;
+                responseContent = FILE_NOT_FOUND_RESPONSE.getBytes(); // TODO: specify UTF-8?
+
+                log("Requested file was not found");
+            }
+
+            buffer = ByteBuffer.allocate(BFTP.HEADER_LENGTH + responseContent.length);
+
+            buffer.putInt(responseContent.length);
+            buffer.put(responseOpcode);
+            buffer.put(responseContent);
+
+            output.write(buffer.array());
+        }
+
+        /**
          * Helper method to handle an unsupported message type.
          *
-         * @throws  IOException if one is encountered while handling the command.
+         * @throws  IOException if one is encountered while writing to the socket.
          */
         private void handleUnsupported() throws IOException {
             log("Received unsupported command / message from client");
 
-            byte content[] = UNSUPPORTED_COMMAND_RESPONSE.getBytes(), response[];
-            int length = BFTP.HEADER_LENGTH + content.length;
+            byte responseContent[] = UNSUPPORTED_COMMAND_RESPONSE.getBytes();
+            int length = BFTP.HEADER_LENGTH + responseContent.length;
             ByteBuffer buffer = ByteBuffer.allocate(length);
 
             // Build response
-            buffer.putInt(content.length);
+            buffer.putInt(responseContent.length);
             buffer.put(BFTP.ERR);
-            buffer.put(content);
+            buffer.put(responseContent);
 
             output.write(buffer.array());
         }
@@ -317,7 +376,7 @@ public class BFTPServer {
 
             do {
                 // Determine length of partial entry
-                length = Math.min(LOGGING_MAXWIDTH, entry.length() - offset);
+                length = Math.min(LOGGING_MAX_WIDTH, entry.length() - offset);
                 partialEntry = partialEntry.concat(entry.substring(offset, offset + length));
                 logstream.println(partialEntry);
 
@@ -325,7 +384,7 @@ public class BFTPServer {
                 partialEntry = LOGGING_PADDING;
                 offset += length;
             }
-            while (length >= LOGGING_MAXWIDTH);
+            while (length >= LOGGING_MAX_WIDTH);
 
             logstream.flush();
         }
