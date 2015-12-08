@@ -2,7 +2,12 @@ package net.nolasaint.bftp.impl;
 
 import net.nolasaint.bftp.BFTP;
 
-import java.io.*;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.io.PrintWriter;
+import java.io.UnsupportedEncodingException;
 
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -10,12 +15,17 @@ import java.net.SocketException;
 
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Paths;
 import java.util.HashSet;
 import java.util.Set;
 
 /**
- * TODO Documentation
+ * TODO: Documentation
+ *
+ * TODO: Extensibility (what vars need protected vs which can be private?)
+ *
+ * TODO: Allow run() to be called after shutdown()
  *
  * NOTE: Runs on top of TCP.
  *
@@ -25,23 +35,29 @@ import java.util.Set;
  */
 public class BFTPServer {
 
-    /* LOGGING_MAX_WIDTH indicates the maximum length of a log entry line without the prefix */
-    private static final int LOGGING_MAX_WIDTH = 80;
+    /* DEFAULT_ENCODING specifies the server's default String encoding format */
+    private static final String DEFAULT_ENCODING = "UTF-8";
 
-    /* LOGGING_PREFIX occurs before all logging entries */
-    private static final String LOGGING_PREFIX = "[Server] ";
+    /* LOGGING_MAX_WIDTH indicates the maximum length of a log entry line without the prefix */
+    private static final int LOGGING_MAX_WIDTH = 120;
 
     /* LOGGING_PADDING is used to align multi-line log entries */
     private static final String LOGGING_PADDING = "         ";
 
+    /* LOGGING_PREFIX occurs before all logging entries */
+    private static final String LOGGING_PREFIX = "[Server] ";
+
+    /* ROOT_DIRECTORY is the directory from which the server may find target files for BFTP */
+    private static final String ROOT_DIRECTORY = "public/";
+
     private final PrintWriter logstream;
 
     private boolean listen;
-    private Set<ClientHandler> clientHandlers; // Todo - Every once in a while poll this and see if client closed
     private ServerSocket ssocket;
+    private Set<ClientHandler> clientHandlers; // Todo - Every once in a while poll this and see if client closed
 
     /**
-     * Creates a bound, logging BFTP Server.
+     * Creates a bound, logging BFTPServer.
      *
      * @param   port        the port number on which to bind the server
      * @param   logstream   the OutputStream to log to
@@ -69,7 +85,7 @@ public class BFTPServer {
     }
 
     /**
-     * Creates a bound, non-logging BFTP Server.
+     * Creates a bound, non-logging BFTPServer.
      *
      * @param   port    the port number on which to bind the server
      *
@@ -110,7 +126,7 @@ public class BFTPServer {
                 new Thread(clientHandler).start();
             }
             catch (SocketException se) {
-                // Socket times out
+                // Server socket closed, generally from shutdown()
             }
         }
 
@@ -121,7 +137,8 @@ public class BFTPServer {
      * Stops the server from accepting new incoming connections, and gracefully closes any client
      * handlers running.
      *
-     * Server may take up to BFTPServer.ACCEPT_TIMEOUT ms to fully shutdown.
+     * @throws  IOException if one is encountered while trying to close server socket, or if server
+     *          socket is already closed.
      */
     public void shutdown() throws IOException {
         ssocket.close();
@@ -133,12 +150,43 @@ public class BFTPServer {
 
     /* PROTECTED MEMBERS */
 
-    /*
-     * TODO Documentation
+    /* PRIVATE MEMBERS */
+
+    /**
+     * Logs output to the BFTPServer instance's logging PrintWriter, if it exists.
      *
-     * Protected s.t. subclasses may use it
+     * If the logging PrintWriter is null, this method does nothing.
+     *
+     * @param   entry   - String that will be logged
      */
-    protected class ClientHandler implements Runnable {
+    private void log(String entry) {
+        if (null != logstream) {
+            String partialEntry = LOGGING_PREFIX;
+            String entryLines[] = entry.split("\n");
+
+            for (String line : entryLines) {
+                int length, offset = 0;
+                do {
+                    // Determine length of partial entry
+                    length = Math.min(LOGGING_MAX_WIDTH, line.length() - offset);
+                    partialEntry = partialEntry.concat(line.substring(offset, offset + length));
+                    logstream.println(partialEntry);
+
+                    // Pad next partial entry
+                    partialEntry = LOGGING_PADDING; // TODO This is causing double padding for \n
+                    offset += length;
+                }
+                while (length >= LOGGING_MAX_WIDTH);
+            }
+
+            logstream.flush();
+        }
+    }
+
+    /**
+     * TODO Documentation
+     */
+    private class ClientHandler implements Runnable {
 
         private static final String
                 FILE_NOT_FOUND_RESPONSE      = "File not found";
@@ -147,14 +195,14 @@ public class BFTPServer {
                 FILE_READ_ERROR_RESPONSE     = "Encountered error while reading file";
 
         private static final String
-                FILE_TOO_LARGE_RESPONSE     = "Requested file is too large (> ~2GiB)";
+                FILE_TOO_LARGE_RESPONSE      = "Requested file is too large (> ~2GiB)";
 
         private static final String
                 UNSUPPORTED_COMMAND_RESPONSE = "Unsupported command";
 
-        private final String clientID;
+        private final String clientID, padding;
 
-        private boolean isFin, shouldClose;
+        private boolean isFin, shouldClose, stopped;
         private DataInputStream input;
         private DataOutputStream output;
         private Socket csocket;
@@ -169,27 +217,34 @@ public class BFTPServer {
             this.csocket = csocket;
             this.clientID = "CH_" + clientID + "> ";
             shouldClose = false;
+            stopped = false;
+
+            // Generate padding for logger
+            padding = this.clientID.replaceAll(".", " ");
 
             log(this.clientID + "Client handler created");
         }
 
-        // TODO Priorityclients? Avoids force-closing the handler
+        // TODO: Priorityclients? Avoids force-closing the handler
 
         /**
-         * Notifies the client handler to close the connection gracefully.
+         * Returns whether this ClientHandler has finished running.
          *
-         * A graceful close will only terminate the connection when the handler is not currently
-         * processing a command from the client.
+         * This method is deprecated since ClientHandler removes itself from the parent BFTPServer
+         * instance's set of ClientHandlers once it is done running.
+         *
+         * @return  TRUE if the ClientHandler is no longer running, else FALSE.
          */
-        public void stop() {
-            shouldClose = true;
-
-            log("Will close after handling current command");
+        @Deprecated
+        public boolean isStopped() {
+            return stopped;
         }
 
         @Override
         public void run() {
             log("Handling client connection");
+
+            ByteBuffer buffer; // Used to construct closing FIN packet
 
             // Try to create I/O streams
             shouldClose = !initializeIOStreams();
@@ -236,7 +291,6 @@ public class BFTPServer {
                     log("Sent response to client");
                 }
                 catch (IOException ioe) {
-                    // TODO: Handle differing types of exceptions
                     log("Encountered IOException while reading from client socket");
 
                     shouldClose = true;
@@ -252,9 +306,89 @@ public class BFTPServer {
 
             log("Closing connection with client");
 
-            // TODO: send(FIN)
+            buffer = ByteBuffer.allocate(BFTP.HEADER_LENGTH);
 
+            buffer.putInt(0); // no content
+            buffer.put(BFTP.FIN);
+
+            if (!csocket.isClosed()) {
+                try {
+                    output.write(buffer.array());
+                    output.flush();
+
+                    input.close();
+                    output.close();
+
+                    // TODO: will this cause socket exception for client?
+                    csocket.close();
+                }
+                catch (IOException ioe) {
+                    log("Encountered IOException while cleaning up connection");
+                }
+            }
+            else {
+                log("Client socket already closed, cannot send FIN");
+            }
+
+            stopped = true;
             clientHandlers.remove(this);
+        }
+
+        /**
+         * Notifies the client handler to close the connection gracefully.
+         *
+         * A graceful close will only terminate the connection when the handler is not currently
+         * processing a command from the client.
+         */
+        public void stop() {
+            shouldClose = true;
+
+            log("Will close after handling current command");
+        }
+
+        /**
+         * Helper method to convert the given byte array to a String.
+         *
+         * Attempts to use UTF-8 encoding, but will default to the native machine encoding if UTF-8
+         * is not supported.
+         *
+         * This method is essentially a wrapper around an UnsupportedEncodingException.
+         *
+         * @param   bytes   - byte array to convert to a String
+         *
+         * @return  a String formed from the provided bytes.
+         */
+        private String bytesToString(byte bytes[]) {
+            String string;
+
+            try {
+                string = new String(bytes, DEFAULT_ENCODING);
+            }
+            catch (UnsupportedEncodingException uee) {
+                // Should never be reached
+                throw new AssertionError(DEFAULT_ENCODING + " encoding not supported");
+            }
+
+            return string;
+        }
+
+        /**
+         * Helper method to safely check if a file with the specified path exists.
+         *
+         * @param   path    - the path at which to check if a file exists
+         * @return  TRUE if the file exists, FALSE otherwise.
+         */
+        private boolean fileExists(String path) {
+            boolean exists;
+
+            try {
+                exists = Files.exists(Paths.get(path));
+            }
+            catch (InvalidPathException ipe) {
+                exists = false;
+            }
+
+            return exists;
         }
 
         /**
@@ -265,37 +399,37 @@ public class BFTPServer {
          * @throws  IOException if one is encountered while writing to the socket.
          */
         private void handleGet(byte content[]) throws IOException {
-            log("Received GET request from client");
-
             byte responseOpcode, responseContent[];
             ByteBuffer buffer;
-            String path = new String(content); // TODO: specify UTF-8?
+            String path = bytesToString(content);
 
-            // Check if file exists
-            if (Files.exists(Paths.get(path))) { // TODO: catch IllegalPathException
+            log("Received GET request from client:\n> GET " + path);
+
+            // Only look for file in specific public directory
+            if (fileExists(ROOT_DIRECTORY + path)) {
                 // Don't throw IOException from file reads
                 try {
                     responseOpcode = BFTP.GET | BFTP.RSP;
-                    responseContent = Files.readAllBytes(Paths.get(path));
+                    responseContent = Files.readAllBytes(Paths.get(ROOT_DIRECTORY + path));
 
                     log("Sending requested file to client");
                 }
                 catch (OutOfMemoryError ome) {
                     responseOpcode = BFTP.GET | BFTP.RSP;
-                    responseContent = FILE_TOO_LARGE_RESPONSE.getBytes(); // TODO: specify UTF-8?
+                    responseContent = stringToBytes(FILE_TOO_LARGE_RESPONSE);
 
                     log("Requested file is too large");
                 }
                 catch (IOException ie) {
                     responseOpcode = BFTP.GET | BFTP.ERR;
-                    responseContent = FILE_READ_ERROR_RESPONSE.getBytes(); // TODO: specify UTF-8?
+                    responseContent = stringToBytes(FILE_READ_ERROR_RESPONSE);
 
                     log("Encounter IOException while reading from file");
                 }
             }
             else {
                 responseOpcode = BFTP.GET | BFTP.ERR;
-                responseContent = FILE_NOT_FOUND_RESPONSE.getBytes(); // TODO: specify UTF-8?
+                responseContent = stringToBytes(FILE_NOT_FOUND_RESPONSE);
 
                 log("Requested file was not found");
             }
@@ -354,40 +488,44 @@ public class BFTPServer {
 
         /**
          * Helper method to log client handler output.
+         *
+         * The clientID String is added as a prefix to the provided entry before logging.
+         *
+         * @param   entry   - String that will be logged
          */
         private void log(String entry) {
+            // Ensure newlines will be aligned
+            entry = entry.replaceAll("\n", "\n" + padding);
+
             BFTPServer.this.log(clientID + entry);
         }
-    }
 
-    /* PRIVATE MEMBERS */
+        /**
+         * Helper method to convert the given String to a byte array.
+         *
+         * Attempts to use UTF-8 encoding, but will default to the native machine encoding if UTF-8
+         * is not supported.
+         *
+         * This method is essentially a wrapper around an UnsupportedEncodingException.
+         *
+         * @param   string  - string to get bytes from
+         *
+         * @return  the byte array representation of the provided string.
+         */
+        private byte[] stringToBytes(String string) {
+            byte stringBytes[];
 
-    /*
-     * Helper method to log server output to the OutputStream logstream.
-     * If logstream is null, nothing is done.
-     */
-    private void log(String entry) {
-        if (null != logstream && null != entry) {
-            int offset = 0, length = 0;
-            String partialEntry = LOGGING_PREFIX;
-
-            // Ensure newlines will be aligned
-            entry = entry.replaceAll("\n", "\n" + LOGGING_PADDING);
-
-            do {
-                // Determine length of partial entry
-                length = Math.min(LOGGING_MAX_WIDTH, entry.length() - offset);
-                partialEntry = partialEntry.concat(entry.substring(offset, offset + length));
-                logstream.println(partialEntry);
-
-                // Pad next partial entry
-                partialEntry = LOGGING_PADDING;
-                offset += length;
+            try {
+                stringBytes = string.getBytes(DEFAULT_ENCODING);
             }
-            while (length >= LOGGING_MAX_WIDTH);
+            catch (UnsupportedEncodingException uee) {
+                // Should never be reached
+                throw new AssertionError(DEFAULT_ENCODING + " encoding not supported");
+            }
 
-            logstream.flush();
+            return stringBytes;
         }
+
     }
 
 }

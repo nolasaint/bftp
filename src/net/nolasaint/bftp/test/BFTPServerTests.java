@@ -5,8 +5,11 @@ import net.nolasaint.bftp.impl.BFTPServer;
 
 import java.io.DataInputStream;
 import java.io.IOException;
+
+import java.io.OutputStream;
 import java.net.BindException;
 import java.net.Socket;
+
 import java.nio.ByteBuffer;
 
 /**
@@ -17,9 +20,63 @@ import java.nio.ByteBuffer;
  */
 public class BFTPServerTests {
 
+    public static void testGet() {
+        int port = 0xFADE;
+        String path = "README.md";
+
+        try {
+            BFTPServer server   = new BFTPServer(port, System.out);
+            Runnable runtask    = () -> { try { server.run(); } catch (IOException ioe) { } };
+            Socket clientSocket = new Socket("localhost", port);
+            Thread runthread    = new Thread(runtask);
+
+            runthread.start();
+            // ------------------
+
+            byte content[] = path.getBytes(), response[];
+            int responseCsize;
+            ByteBuffer buffer = ByteBuffer.allocate(BFTP.HEADER_LENGTH + content.length);
+            DataInputStream input = new DataInputStream(clientSocket.getInputStream());
+            StringBuilder testOutput = new StringBuilder();
+
+            buffer.putInt(content.length);
+            buffer.put(BFTP.GET);
+            buffer.put(content);
+
+            clientSocket.getOutputStream().write(buffer.array());
+            clientSocket.getOutputStream().flush();
+
+            // Blocks until we get a response
+            responseCsize = input.readInt();
+            response = new byte[responseCsize];
+
+            testOutput.append("Received response:\n");
+            testOutput.append("\tcsize:   " + responseCsize + "\n");
+            testOutput.append("\topcode:  " + input.readByte() + "\n");
+
+            for (int i = 0; i < responseCsize; i++) {
+                response[i] = input.readByte();
+            }
+
+            testOutput.append("\tcontent: " + new String(response));
+
+            System.out.println(testOutput);
+
+            server.shutdown();
+            clientSocket.close();
+        }
+        catch (BindException be) {
+            System.err.println("ERROR: Could not create BFTPServer, port " + port
+                    + " already bound");
+        }
+        catch (IOException ioe) {
+            System.err.println("ERROR: Could not create BFTPServer");
+        }
+    }
+
     public static void testGetNonexistent() {
         int port = 0xFADE;
-        String path = "public/fake/README.md";
+        String path = "fake/README.md";
 
         try {
             BFTPServer server   = new BFTPServer(port, System.out);
@@ -112,6 +169,7 @@ public class BFTPServerTests {
     }
 
     public static void main(String args[]) {
-        testGetNonexistent();
+        testGet();
     }
+
 }
