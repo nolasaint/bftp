@@ -17,6 +17,7 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Paths;
+
 import java.util.HashSet;
 import java.util.Set;
 
@@ -54,7 +55,7 @@ public class BFTPServer {
 
     private boolean listen;
     private ServerSocket ssocket;
-    private Set<ClientHandler> clientHandlers; // Todo - Every once in a while poll this and see if client closed
+    private Set<ClientHandler> clientHandlers;
 
     /**
      * Creates a bound, logging BFTPServer.
@@ -173,7 +174,7 @@ public class BFTPServer {
                     logstream.println(partialEntry);
 
                     // Pad next partial entry
-                    partialEntry = LOGGING_PADDING; // TODO This is causing double padding for \n
+                    partialEntry = LOGGING_PADDING;
                     offset += length;
                 }
                 while (length >= LOGGING_MAX_WIDTH);
@@ -224,8 +225,6 @@ public class BFTPServer {
 
             log(this.clientID + "Client handler created");
         }
-
-        // TODO: Priorityclients? Avoids force-closing the handler
 
         /**
          * Returns whether this ClientHandler has finished running.
@@ -316,10 +315,9 @@ public class BFTPServer {
                     output.write(buffer.array());
                     output.flush();
 
+                    // Close resources
                     input.close();
                     output.close();
-
-                    // TODO: will this cause socket exception for client?
                     csocket.close();
                 }
                 catch (IOException ioe) {
