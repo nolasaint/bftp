@@ -3,11 +3,11 @@ package net.nolasaint.bftp;
 /**
  * Basic File Transfer Protocol
  *
- * @TODO Write class-level documentation
+ * TODO: Write class-level documentation
  *
+ * Created: 2015-11-30
  * @author  Evan Bailey
  * @version 1.0
- * @since   2015-11-30
  */
 @SuppressWarnings("unused")
 public final class BFTP {

@@ -30,9 +30,9 @@ import java.util.Set;
  *
  * NOTE: Runs on top of TCP.
  *
+ * Created: 2015-30-11
  * @author  Evan Bailey
  * @version 1.0
- * @since   2015-30-11
  */
 public class BFTPServer {
 
@@ -53,7 +53,7 @@ public class BFTPServer {
 
     private final PrintWriter logstream;
 
-    private boolean listen;
+    private volatile boolean listen, overwriting; // TODO constructor parameter for this? + get/set
     private ServerSocket ssocket;
     private Set<ClientHandler> clientHandlers;
 
@@ -78,6 +78,7 @@ public class BFTPServer {
 
         ssocket = new ServerSocket(port);
         listen = false;
+        overwriting = false; // TODO from parameter?
 
         // Avoid instantiating this if ServerSocket creation causes IOException
         clientHandlers = new HashSet<>();
@@ -149,6 +150,28 @@ public class BFTPServer {
         clientHandlers.forEach(ClientHandler::stop);
     }
 
+    /**
+     * Sets the server's overwriting status.
+     *
+     * If overwriting is set to true, PUT requests may overwriting existing files.
+     *
+     * @param   overwriting - whether to set the server to be overwriting
+     */
+    public void setOverwriting(boolean overwriting) {
+        this.overwriting = overwriting;
+    }
+
+    /**
+     * Returns whether this server is set to be overwriting.
+     *
+     * If overwriting is set to true, PUT requests may overwriting existing files.
+     *
+     * @return  TRUE if this server is overwriting, FALSE if it is not.
+     */
+    public boolean isOverwriting() {
+        return overwriting;
+    }
+
     /* PROTECTED MEMBERS */
 
     /* PRIVATE MEMBERS */
@@ -190,10 +213,16 @@ public class BFTPServer {
     private class ClientHandler implements Runnable {
 
         private static final String
+                FILE_ALREADY_EXISTS_RESPONSE = "File already exists";
+
+        private static final String
                 FILE_NOT_FOUND_RESPONSE      = "File not found";
 
         private static final String
-                FILE_READ_ERROR_RESPONSE     = "Encountered error while reading file";
+                FILE_READ_ERROR_RESPONSE     = "Encountered error while reading from file";
+
+        private static final String
+                FILE_WRITE_ERROR_RESPONSE    = "Encountered error while writing to file";
 
         private static final String
                 FILE_TOO_LARGE_RESPONSE      = "Requested file is too large (> ~2GiB)";
@@ -272,7 +301,7 @@ public class BFTPServer {
                             break;
 
                         case BFTP.PUT:
-                            // TODO: implement
+                            handlePut(content);
                             break;
 
                         case BFTP.FIN:
@@ -399,37 +428,75 @@ public class BFTPServer {
         private void handleGet(byte content[]) throws IOException {
             byte responseOpcode, responseContent[];
             ByteBuffer buffer;
-            String path = bytesToString(content);
-
-            log("Received GET request from client:\n> GET " + path);
 
             // Only look for file in specific public directory
-            if (fileExists(ROOT_DIRECTORY + path)) {
+            String requestPath = bytesToString(content), path = ROOT_DIRECTORY + requestPath;
+
+            log("Received GET request from client:\n> GET " + requestPath);
+
+            if (fileExists(path)) {
                 // Don't throw IOException from file reads
                 try {
                     responseOpcode = BFTP.GET | BFTP.RSP;
-                    responseContent = Files.readAllBytes(Paths.get(ROOT_DIRECTORY + path));
+                    responseContent = Files.readAllBytes(Paths.get(path));
 
                     log("Sending requested file to client");
                 }
                 catch (OutOfMemoryError ome) {
-                    responseOpcode = BFTP.GET | BFTP.RSP;
+                    responseOpcode = BFTP.GET | BFTP.RSP | BFTP.ERR;
                     responseContent = stringToBytes(FILE_TOO_LARGE_RESPONSE);
 
                     log("Requested file is too large");
                 }
                 catch (IOException ie) {
-                    responseOpcode = BFTP.GET | BFTP.ERR;
+                    responseOpcode = BFTP.GET | BFTP.RSP | BFTP.ERR;
                     responseContent = stringToBytes(FILE_READ_ERROR_RESPONSE);
 
-                    log("Encounter IOException while reading from file");
+                    log("Encountered IOException while reading from file");
                 }
             }
             else {
-                responseOpcode = BFTP.GET | BFTP.ERR;
+                responseOpcode = BFTP.GET | BFTP.RSP | BFTP.ERR;
                 responseContent = stringToBytes(FILE_NOT_FOUND_RESPONSE);
 
                 log("Requested file was not found");
+            }
+
+            buffer = ByteBuffer.allocate(BFTP.HEADER_LENGTH + responseContent.length);
+
+            buffer.putInt(responseContent.length);
+            buffer.put(responseOpcode);
+            buffer.put(responseContent);
+
+            output.write(buffer.array());
+        }
+
+        /**
+         * Helper method to handle a PUT request.
+         *
+         * @param   content - bytes of the content field
+         *
+         * @throws  IOException if one is encountered while writing to the socket or file.
+         */
+        private void handlePut(byte content[]) throws IOException {
+            byte responseOpcode, responseContent[];
+            ByteBuffer buffer;
+
+            // Only look for file in specific public directory
+            String requestPath = bytesToString(content), path = ROOT_DIRECTORY + requestPath;
+
+            log("Received PUT request from client:\n> PUT " + requestPath);
+
+            if (!overwriting && fileExists(path)) {
+                responseOpcode = BFTP.PUT | BFTP.RSP | BFTP.ERR;
+                responseContent = stringToBytes(FILE_ALREADY_EXISTS_RESPONSE);
+
+                log("File already exists, server is non-overwriting");
+            }
+            else {
+                // TODO: Temp
+                responseOpcode = BFTP.PUT | BFTP.RSP;
+                responseContent = stringToBytes("Placeholder");
             }
 
             buffer = ByteBuffer.allocate(BFTP.HEADER_LENGTH + responseContent.length);
